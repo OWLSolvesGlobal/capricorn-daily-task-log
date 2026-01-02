@@ -2,6 +2,7 @@ import os
 import uuid
 from datetime import datetime
 import json
+
 import gspread
 import pytz
 import streamlit as st
@@ -38,6 +39,7 @@ def _get_setting(key: str, default=None):
         return st.secrets[key]
     return os.getenv(key, default)
 
+
 @st.cache_resource
 def get_gspread_client():
     """
@@ -50,7 +52,6 @@ def get_gspread_client():
         creds_info = dict(st.secrets["gcp_service_account"])
 
         # Safety: ensure private_key has correct line breaks
-        # (Sometimes people paste with literal \n; convert if needed)
         pk = creds_info.get("private_key", "")
         if "\\n" in pk and "\n" not in pk:
             creds_info["private_key"] = pk.replace("\\n", "\n")
@@ -71,11 +72,10 @@ def get_gspread_client():
     creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
     return gspread.authorize(creds)
 
+
 def open_sheet(gc):
     sheet_id = _get_setting("sheet_id")
     if not sheet_id:
-        # Fallback to hard-coded SHEET_ID for local testing if you want.
-        # Recommended: set sheet_id in secrets.
         sheet_id = "1t3eqKccUSKawZHfYz9nrbGdADK1pntbSsDEf0erxPZ0"
 
     # Guard against pasting full URL
@@ -125,8 +125,6 @@ def append_rows_batch(sh, tab_log: str, rows):
         st.exception(e)
         st.stop()
 
-    # Append to the sheet
-    # Using A1 range starting at A (Google appends after last row when insertDataOption is set)
     body = {"values": rows}
     ws.spreadsheet.values_append(
         ws.title,
@@ -170,14 +168,35 @@ def validate(employee, tasks):
     return errors
 
 
+def reset_form(task_options):
+    """
+    Clears all user inputs and resets the form to a single blank task row.
+    Also clears widget keys so values don't "stick" after rerun.
+    """
+    # Clear name
+    st.session_state["employee_name"] = ""
+
+    # Clear dynamic row widget keys (so old values don't persist)
+    prefixes = ("task_cat_", "qty_", "client_", "other_", "remove_")
+    for k in list(st.session_state.keys()):
+        if isinstance(k, str) and k.startswith(prefixes):
+            st.session_state.pop(k, None)
+
+    # Reset tasks to a single blank row
+    st.session_state["tasks"] = [{
+        "task_category": task_options[0],
+        "quantity": 1,
+        "client_notes": "",
+        "task_other_text": ""
+    }]
+
+
 # =========================
 # APP
 # =========================
 st.set_page_config(page_title="Daily Task Log", layout="centered")
 
 # --- Simple access gate ---
-# Set in Streamlit Secrets as: app_passcode = "..."
-# Or locally as env var: APP_PASSCODE
 app_passcode = _get_setting("app_passcode") or _get_setting("APP_PASSCODE")
 if not app_passcode:
     st.warning(
@@ -206,11 +225,11 @@ task_options = load_task_options(sh, tab_config)
 
 # --- Initialize session state for tasks ---
 if "tasks" not in st.session_state:
-    st.session_state.tasks = [
-        {"task_category": task_options[0], "quantity": 1, "client_notes": "", "task_other_text": ""}
-    ]
+    reset_form(task_options)
 
-employee_name = st.text_input("Your name", placeholder="Type your full name").strip()
+# Name field (keyed so we can clear it)
+st.text_input("Your name", key="employee_name", placeholder="Type your full name")
+employee_name = (st.session_state.get("employee_name") or "").strip()
 
 st.subheader("Tasks completed today")
 
@@ -221,7 +240,6 @@ def add_task_row():
     )
 
 
-# Optional: allow removing a task row to reduce entry mistakes
 def remove_task_row(index: int):
     if len(st.session_state.tasks) <= 1:
         return
@@ -307,12 +325,12 @@ if st.button("✅ Submit"):
 
     try:
         append_rows_batch(sh, tab_log, rows)
-        st.success("Submitted ✅ Thank you.")
 
-        # Reset form after success
-        st.session_state.tasks = [
-            {"task_category": task_options[0], "quantity": 1, "client_notes": "", "task_other_text": ""}
-        ]
+        # Toast popup confirmation (small + mobile-friendly)
+        st.toast("Thank you — your submission has been saved ✅", icon="✅")
+
+        # Reset all fields and rerun to show blank form
+        reset_form(task_options)
         st.rerun()
 
     except Exception as ex:
