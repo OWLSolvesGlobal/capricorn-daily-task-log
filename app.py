@@ -202,16 +202,20 @@ def validate(employee, tasks):
 
 def reset_form(task_options):
     """
-    Clears all user inputs and resets the form to a single blank task row.
-    Also clears widget keys so values don't "stick" after rerun.
+    IMPORTANT:
+    Do NOT assign to st.session_state['employee_name'] after the widget exists.
+    Instead, remove keys with pop() BEFORE widgets instantiate (handled via reset flag).
     """
-    st.session_state["employee_name"] = ""
+    # Clear name widget state
+    st.session_state.pop("employee_name", None)
 
+    # Clear dynamic widget keys
     prefixes = ("task_cat_", "qty_", "client_", "other_", "remove_")
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
             st.session_state.pop(k, None)
 
+    # Reset tasks to a single row
     st.session_state["tasks"] = [{
         "task_category": task_options[0],
         "quantity": 1,
@@ -258,6 +262,15 @@ except Exception as e:
     st.error("Could not load task list from the Config tab.")
     st.exception(e)
     st.stop()
+
+# --- Apply post-submit reset BEFORE widgets are instantiated ---
+if st.session_state.get("reset_requested", False):
+    reset_form(task_options)
+    st.session_state["reset_requested"] = False
+
+toast_msg = st.session_state.pop("toast_msg", None)
+if toast_msg:
+    st.toast(toast_msg, icon="✅")
 
 # Initialize session state
 if "tasks" not in st.session_state:
@@ -361,8 +374,10 @@ if st.button("✅ Submit"):
 
     try:
         append_rows_batch(sheet_id, tab_log, rows)
-        st.toast("Thank you — your submission has been saved ✅", icon="✅")
-        reset_form(task_options)
+
+        # Request reset on next run (before widgets instantiate)
+        st.session_state["toast_msg"] = "Thank you — your submission has been saved ✅"
+        st.session_state["reset_requested"] = True
         st.rerun()
 
     except Exception as e:
