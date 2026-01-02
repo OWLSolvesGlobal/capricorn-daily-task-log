@@ -1,7 +1,7 @@
 import os
 import uuid
 from datetime import datetime
-
+import json
 import gspread
 import pytz
 import streamlit as st
@@ -38,30 +38,45 @@ def _get_setting(key: str, default=None):
         return st.secrets[key]
     return os.getenv(key, default)
 
-
 @st.cache_resource
 def get_gspread_client():
     """
     Auth priority:
-    1) Streamlit secrets: st.secrets["gcp_service_account"] (recommended for deployment)
-    2) Local dev: GOOGLE_APPLICATION_CREDENTIALS file path
+    1) Streamlit secrets: gcp_service_account_json (recommended, most robust)
+    2) Streamlit secrets: gcp_service_account (dict form - optional fallback)
+    3) Local dev: GOOGLE_APPLICATION_CREDENTIALS file path
     """
-    # --- Option 1: Streamlit Secrets (best for deployment) ---
+
+    # --- Option 1: Streamlit Secrets - full JSON blob (recommended) ---
+    if hasattr(st, "secrets") and "gcp_service_account_json" in st.secrets:
+        raw = str(st.secrets["gcp_service_account_json"]).strip()
+        try:
+            info = json.loads(raw)
+        except Exception as e:
+            st.error(
+                "Couldnt parse `gcp_service_account_json` as JSON.\n"
+                "Re-paste the FULL service account JSON file into Streamlit Secrets."
+            )
+            st.exception(e)
+            st.stop()
+
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        return gspread.authorize(creds)
+
+    # --- Option 2: Streamlit Secrets - dict form (fallback) ---
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         return gspread.authorize(creds)
 
-    # --- Option 2: Local JSON file via env var ---
+    # --- Option 3: Local JSON file via env var ---
     creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if not creds_path:
         st.error(
             "Credentials not configured.\n\n"
-            "For Streamlit Cloud: add `gcp_service_account` in Secrets.\n"
-            "For local dev: set environment variable GOOGLE_APPLICATION_CREDENTIALS "
-            "to the path of your service account JSON.\n\n"
-            "PowerShell example:\n"
-            '$env:GOOGLE_APPLICATION_CREDENTIALS="G:\\My Drive\\CapricornDrapery\\DailyTaskLog\\YOUR_KEY.json"'
+            "For Streamlit Cloud: add `gcp_service_account_json` in Secrets.\n"
+            "For local dev: set GOOGLE_APPLICATION_CREDENTIALS to the path of your JSON.\n\n"
+            'PowerShell example:\n$env:GOOGLE_APPLICATION_CREDENTIALS="G:\\My Drive\\CapricornDrapery\\DailyTaskLog\\YOUR_KEY.json"'
         )
         st.stop()
 
