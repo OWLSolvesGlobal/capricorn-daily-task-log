@@ -42,51 +42,34 @@ def _get_setting(key: str, default=None):
 def get_gspread_client():
     """
     Auth priority:
-    1) Streamlit secrets: gcp_service_account_json (recommended, most robust)
-    2) Streamlit secrets: gcp_service_account (dict form - optional fallback)
-    3) Local dev: GOOGLE_APPLICATION_CREDENTIALS file path
+    1) Streamlit secrets: gcp_service_account (TOML dict)  ✅ recommended
+    2) Local dev: GOOGLE_APPLICATION_CREDENTIALS file path
     """
+    # --- Streamlit Cloud: dict stored in Secrets ---
+    if "gcp_service_account" in st.secrets:
+        creds_info = dict(st.secrets["gcp_service_account"])
 
-    # --- Option 1: Streamlit Secrets - full JSON blob (recommended) ---
-    if hasattr(st, "secrets") and "gcp_service_account_json" in st.secrets:
-        raw = str(st.secrets["gcp_service_account_json"]).strip()
-        try:
-            info = json.loads(raw)
-        except Exception as e:
-            st.error(
-                "Couldnt parse `gcp_service_account_json` as JSON.\n"
-                "Re-paste the FULL service account JSON file into Streamlit Secrets."
-            )
-            st.exception(e)
-            st.stop()
+        # Safety: ensure private_key has correct line breaks
+        # (Sometimes people paste with literal \n; convert if needed)
+        pk = creds_info.get("private_key", "")
+        if "\\n" in pk and "\n" not in pk:
+            creds_info["private_key"] = pk.replace("\\n", "\n")
 
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-        return gspread.authorize(creds)
-
-    # --- Option 2: Streamlit Secrets - dict form (fallback) ---
-    if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
-        creds_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         return gspread.authorize(creds)
 
-    # --- Option 3: Local JSON file via env var ---
+    # --- Local dev fallback ---
     creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if not creds_path:
         st.error(
             "Credentials not configured.\n\n"
-            "For Streamlit Cloud: add `gcp_service_account_json` in Secrets.\n"
-            "For local dev: set GOOGLE_APPLICATION_CREDENTIALS to the path of your JSON.\n\n"
-            'PowerShell example:\n$env:GOOGLE_APPLICATION_CREDENTIALS="G:\\My Drive\\CapricornDrapery\\DailyTaskLog\\YOUR_KEY.json"'
+            "For Streamlit Cloud: add [gcp_service_account] in Secrets.\n"
+            "For local dev: set GOOGLE_APPLICATION_CREDENTIALS to the path of your JSON."
         )
-        st.stop()
-
-    if not os.path.exists(creds_path):
-        st.error(f"Credentials file not found at: {creds_path}")
         st.stop()
 
     creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
     return gspread.authorize(creds)
-
 
 def open_sheet(gc):
     sheet_id = _get_setting("sheet_id")
