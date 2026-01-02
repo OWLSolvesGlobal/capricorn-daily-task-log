@@ -1,7 +1,7 @@
 import os
 import uuid
+import time
 from datetime import datetime
-import json
 
 import gspread
 import pytz
@@ -22,19 +22,15 @@ SCOPES = [
 DEFAULT_TAB_CONFIG = "Config"
 DEFAULT_TAB_LOG = "DailyLog"
 
-# Quantity guardrails (keeps data sane on mobile)
 QTY_MIN = 1
 QTY_MAX = 200  # adjust if needed
 
 
 # =========================
-# HELPERS
+# SETTINGS + AUTH
 # =========================
 def _get_setting(key: str, default=None):
-    """
-    Reads from Streamlit Secrets first, then environment variables.
-    This lets the same code run locally and on Streamlit Cloud.
-    """
+    """Reads from Streamlit Secrets first, then environment variables."""
     if hasattr(st, "secrets") and key in st.secrets:
         return st.secrets[key]
     return os.getenv(key, default)
@@ -44,14 +40,14 @@ def _get_setting(key: str, default=None):
 def get_gspread_client():
     """
     Auth priority:
-    1) Streamlit secrets: gcp_service_account (TOML dict)  ✅ recommended
+    1) Streamlit secrets: gcp_service_account (TOML dict)
     2) Local dev: GOOGLE_APPLICATION_CREDENTIALS file path
     """
-    # --- Streamlit Cloud: dict stored in Secrets ---
-    if "gcp_service_account" in st.secrets:
+    # Streamlit Cloud secrets
+    if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         creds_info = dict(st.secrets["gcp_service_account"])
 
-        # Safety: ensure private_key has correct line breaks
+        # Normalize private_key line breaks if pasted with literal \n
         pk = creds_info.get("private_key", "")
         if "\\n" in pk and "\n" not in pk:
             creds_info["private_key"] = pk.replace("\\n", "\n")
@@ -59,7 +55,7 @@ def get_gspread_client():
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         return gspread.authorize(creds)
 
-    # --- Local dev fallback ---
+    # Local fallback
     creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if not creds_path:
         st.error(
@@ -73,39 +69,58 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 
-def open_sheet(gc):
-    sheet_id = _get_setting("sheet_id")
+def _is_rate_limit_error(e: Exception) -> bool:
+    msg = str(e)
+    return ("429" in msg) or ("Quota exceeded" in msg) or ("rate limit" in msg.lower())
+
+
+@st.cache_resource
+def open_sheet_cached(sheet_id: str):
+    """
+    Opens the Google Sheet once and caches the Spreadsheet object across reruns.
+    Includes retry/backoff for 429s.
+    """
     if not sheet_id:
-        sheet_id = "1t3eqKccUSKawZHfYz9nrbGdADK1pntbSsDEf0erxPZ0"
+        raise RuntimeError("Missing sheet_id. Set `sheet_id` in Streamlit Secrets.")
 
-    # Guard against pasting full URL
+    # Guard against pasting a URL instead of an ID
     if "http" in sheet_id or "/d/" in sheet_id:
-        st.error("sheet_id looks like a URL. Paste ONLY the ID between /d/ and /edit.")
-        st.stop()
+        raise RuntimeError("sheet_id looks like a URL. Paste ONLY the ID between /d/ and /edit.")
 
-    try:
-        return gc.open_by_key(sheet_id)
-    except Exception as e:
-        st.error("Could not open the Google Sheet. Check sheet_id and sharing permissions.")
-        st.write(f"sheet_id: `{sheet_id}`")
-        st.exception(e)
-        st.stop()
+    gc = get_gspread_client()
+
+    backoffs = [0, 1, 2, 4, 8, 16]
+    last_err = None
+    for wait in backoffs:
+        if wait:
+            time.sleep(wait)
+        try:
+            return gc.open_by_key(sheet_id)
+        except Exception as e:
+            last_err = e
+            if _is_rate_limit_error(e):
+                continue
+            raise  # non-429: fail fast
+
+    raise last_err
 
 
-def load_task_options(sh, tab_config: str):
-    try:
-        ws = sh.worksheet(tab_config)
-    except Exception as e:
-        st.error(f"Could not find worksheet/tab named '{tab_config}'.")
-        st.write("Fix the tab name or rename your sheet tab to match.")
-        st.exception(e)
-        st.stop()
+# =========================
+# DATA LOAD (CACHED)
+# =========================
+@st.cache_data(ttl=3600)
+def load_task_options_cached(sheet_id: str, tab_config: str):
+    """
+    Loads task options from Config tab column A and caches them.
+    This removes repeated 'read' calls on every Streamlit rerun.
+    """
+    sh = open_sheet_cached(sheet_id)
+    ws = sh.worksheet(tab_config)
 
     col = ws.col_values(1)
     tasks = [x.strip() for x in col if x.strip()]
     if not tasks:
-        st.error(f"No tasks found in {tab_config}! Add task names in column A.")
-        st.stop()
+        raise RuntimeError(f"No tasks found in '{tab_config}' column A.")
 
     if "Other" not in tasks:
         tasks.append("Other")
@@ -113,26 +128,43 @@ def load_task_options(sh, tab_config: str):
     return tasks
 
 
-def append_rows_batch(sh, tab_log: str, rows):
+# =========================
+# WRITE (ONLY ON SUBMIT)
+# =========================
+def append_rows_batch(sheet_id: str, tab_log: str, rows):
     """
-    Efficient append using Google Sheets API via gspread's values_append.
-    This is more reliable under concurrent submissions than looping append_row.
+    Appends rows to DailyLog using values_append.
+    Retries on 429s.
     """
-    try:
-        ws = sh.worksheet(tab_log)
-    except Exception as e:
-        st.error(f"Could not find worksheet/tab named '{tab_log}'.")
-        st.exception(e)
-        st.stop()
+    sh = open_sheet_cached(sheet_id)
 
-    body = {"values": rows}
-    ws.spreadsheet.values_append(
-        ws.title,
-        params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
-        body=body,
-    )
+    backoffs = [0, 1, 2, 4, 8, 16]
+    last_err = None
+    for wait in backoffs:
+        if wait:
+            time.sleep(wait)
+        try:
+            ws = sh.worksheet(tab_log)
+
+            body = {"values": rows}
+            ws.spreadsheet.values_append(
+                ws.title,
+                params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
+                body=body,
+            )
+            return
+        except Exception as e:
+            last_err = e
+            if _is_rate_limit_error(e):
+                continue
+            raise
+
+    raise last_err
 
 
+# =========================
+# VALIDATION + RESET
+# =========================
 def validate(employee, tasks):
     errors = []
     employee = (employee or "").strip()
@@ -173,16 +205,13 @@ def reset_form(task_options):
     Clears all user inputs and resets the form to a single blank task row.
     Also clears widget keys so values don't "stick" after rerun.
     """
-    # Clear name
     st.session_state["employee_name"] = ""
 
-    # Clear dynamic row widget keys (so old values don't persist)
     prefixes = ("task_cat_", "qty_", "client_", "other_", "remove_")
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
             st.session_state.pop(k, None)
 
-    # Reset tasks to a single blank row
     st.session_state["tasks"] = [{
         "task_category": task_options[0],
         "quantity": 1,
@@ -192,38 +221,45 @@ def reset_form(task_options):
 
 
 # =========================
-# APP
+# APP UI
 # =========================
 st.set_page_config(page_title="Daily Task Log", layout="centered")
 
-# --- Simple access gate ---
+# Passcode gate
 app_passcode = _get_setting("app_passcode") or _get_setting("APP_PASSCODE")
 if not app_passcode:
     st.warning(
         "Security note: No app passcode configured.\n\n"
-        "Set `app_passcode` in Streamlit Secrets (recommended), or `APP_PASSCODE` as an environment variable."
+        "Set `app_passcode` in Streamlit Secrets (recommended)."
     )
 
-with st.container():
-    st.title("Daily Task Log")
-    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
-    now_local = now_utc.astimezone(BARBADOS_TZ)
-    st.caption(f"Date: {now_local.strftime('%Y-%m-%d')}   Time: {now_local.strftime('%I:%M %p')}")
+st.title("Daily Task Log")
+now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
+now_local = now_utc.astimezone(BARBADOS_TZ)
+st.caption(f"Date: {now_local.strftime('%Y-%m-%d')}   Time: {now_local.strftime('%I:%M %p')}")
 
-    if app_passcode:
-        code = st.text_input("Access code", type="password", placeholder="Enter access code")
-        if code != app_passcode:
-            st.stop()
+if app_passcode:
+    code = st.text_input("Access code", type="password", placeholder="Enter access code")
+    if code != app_passcode:
+        st.stop()
 
-# --- Sheet + tasks ---
+# Settings from secrets/env
+sheet_id = _get_setting("sheet_id")
 tab_config = _get_setting("tab_config", DEFAULT_TAB_CONFIG)
 tab_log = _get_setting("tab_log", DEFAULT_TAB_LOG)
 
-gc = get_gspread_client()
-sh = open_sheet(gc)
-task_options = load_task_options(sh, tab_config)
+# Load task options (cached; minimal reads)
+try:
+    task_options = load_task_options_cached(sheet_id, tab_config)
+except Exception as e:
+    if _is_rate_limit_error(e):
+        st.error("Google Sheets is temporarily rate-limiting reads. Please wait ~60 seconds and refresh.")
+        st.stop()
+    st.error("Could not load task list from the Config tab.")
+    st.exception(e)
+    st.stop()
 
-# --- Initialize session state for tasks ---
+# Initialize session state
 if "tasks" not in st.session_state:
     reset_form(task_options)
 
@@ -295,7 +331,9 @@ for i, t in enumerate(st.session_state.tasks):
 st.button("➕ Add another task", on_click=add_task_row)
 
 
-# --- Submit ---
+# =========================
+# SUBMIT
+# =========================
 if st.button("✅ Submit"):
     errs = validate(employee_name, st.session_state.tasks)
     if errs:
@@ -310,29 +348,26 @@ if st.button("✅ Submit"):
 
     rows = []
     for t in st.session_state.tasks:
-        rows.append(
-            [
-                timestamp_utc,                 # timestamp_utc
-                date_local,                    # date_local
-                employee_name.strip(),         # employee_name
-                t["task_category"],            # task_category
-                int(t["quantity"]),            # quantity
-                t["client_notes"].strip(),     # client_notes
-                t["task_other_text"].strip(),  # task_other_text
-                submission_id,                 # submission_id
-            ]
-        )
+        rows.append([
+            timestamp_utc,
+            date_local,
+            employee_name.strip(),
+            t["task_category"],
+            int(t["quantity"]),
+            t["client_notes"].strip(),
+            t["task_other_text"].strip(),
+            submission_id
+        ])
 
     try:
-        append_rows_batch(sh, tab_log, rows)
-
-        # Toast popup confirmation (small + mobile-friendly)
+        append_rows_batch(sheet_id, tab_log, rows)
         st.toast("Thank you — your submission has been saved ✅", icon="✅")
-
-        # Reset all fields and rerun to show blank form
         reset_form(task_options)
         st.rerun()
 
-    except Exception as ex:
+    except Exception as e:
+        if _is_rate_limit_error(e):
+            st.error("Google Sheets is temporarily rate-limiting writes. Please wait ~60 seconds and submit again.")
+            st.stop()
         st.error("Submission failed. Please try again.")
-        st.exception(ex)
+        st.exception(e)
