@@ -27,6 +27,65 @@ QTY_MAX = 200  # adjust if needed
 
 
 # =========================
+# ITEM DROPDOWN OPTIONS
+# =========================
+ITEM_OPTIONS = [
+    # Soft Furnishings
+    "Cushion (Throw Pillow)",
+    "Cushion (Seat)",
+    "Cushion (Back)",
+    "Bolster Cushion",
+    "Outdoor Cushion",
+    "Lounger Pad",
+    "Bench Cushion",
+    "Window Seat Cushion",
+    "Bed Runner",
+    "Bed Skirt / Valance",
+    "Throw / Coverlet",
+
+    # Drapery (styles)
+    "Drapes - Triple Pleat",
+    "Drapes - Pinch Pleat",
+    "Drapes - Pencil Pleat",
+    "Drapes - Eyelet / Grommet",
+    "Drapes - Ripplefold / Wave",
+    "Drapes - Goblet Pleat",
+    "Drapes - Tab Top",
+    "Drapes - Rod Pocket",
+    "Sheer Panels",
+
+    # Blinds & Shades
+    "Roman Blind",
+    "Roller Blind",
+    "Solar / Screen Blind",
+    "Venetian Blind",
+    "Vertical Blind",
+
+    # Decorative top treatments
+    "Pelmet",
+    "Valance",
+    "Cornice",
+
+    # Upholstery / Furniture items
+    "Dining Chair",
+    "Armchair",
+    "Sofa",
+    "Ottoman",
+    "Headboard",
+    "Banquette / Booth Seating",
+
+    # Hotel / Specialty
+    "Blackout Lining",
+    "Interlining",
+    "Tiebacks / Holdbacks",
+    "Curtain Track / Rod Work",
+
+    # Catch-all
+    "Other",
+]
+
+
+# =========================
 # SETTINGS + AUTH
 # =========================
 def _get_setting(key: str, default=None):
@@ -43,7 +102,6 @@ def get_gspread_client():
     1) Streamlit secrets: gcp_service_account (TOML dict)
     2) Local dev: GOOGLE_APPLICATION_CREDENTIALS file path
     """
-    # Streamlit Cloud secrets
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         creds_info = dict(st.secrets["gcp_service_account"])
 
@@ -55,7 +113,6 @@ def get_gspread_client():
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         return gspread.authorize(creds)
 
-    # Local fallback
     creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if not creds_path:
         st.error(
@@ -83,7 +140,6 @@ def open_sheet_cached(sheet_id: str):
     if not sheet_id:
         raise RuntimeError("Missing sheet_id. Set `sheet_id` in Streamlit Secrets.")
 
-    # Guard against pasting a URL instead of an ID
     if "http" in sheet_id or "/d/" in sheet_id:
         raise RuntimeError("sheet_id looks like a URL. Paste ONLY the ID between /d/ and /edit.")
 
@@ -100,7 +156,7 @@ def open_sheet_cached(sheet_id: str):
             last_err = e
             if _is_rate_limit_error(e):
                 continue
-            raise  # non-429: fail fast
+            raise
 
     raise last_err
 
@@ -112,7 +168,6 @@ def open_sheet_cached(sheet_id: str):
 def load_task_options_cached(sheet_id: str, tab_config: str):
     """
     Loads task options from Config tab column A and caches them.
-    This removes repeated 'read' calls on every Streamlit rerun.
     """
     sh = open_sheet_cached(sheet_id)
     ws = sh.worksheet(tab_config)
@@ -145,7 +200,6 @@ def append_rows_batch(sheet_id: str, tab_log: str, rows):
             time.sleep(wait)
         try:
             ws = sh.worksheet(tab_log)
-
             body = {"values": rows}
             ws.spreadsheet.values_append(
                 ws.title,
@@ -178,8 +232,10 @@ def validate(employee, tasks):
 
     for idx, t in enumerate(tasks, start=1):
         task_cat = (t.get("task_category") or "").strip()
+        item_type = (t.get("item_type") or "").strip()
+        item_other_text = (t.get("item_other_text") or "").strip()
         client_notes = (t.get("client_notes") or "").strip()
-        other_text = (t.get("task_other_text") or "").strip()
+        other_task_text = (t.get("task_other_text") or "").strip()
 
         try:
             qty = int(t.get("quantity"))
@@ -188,36 +244,48 @@ def validate(employee, tasks):
 
         if not task_cat:
             errors.append(f"Task {idx}: task category is required.")
+
+        # Item validation
+        if not item_type:
+            errors.append(f"Task {idx}: item worked on is required.")
+        if item_type == "Other" and len(item_other_text) < 3:
+            errors.append(f"Task {idx}: item name is required for 'Other' (min 3 characters).")
+
+        # Quantity + client
         if qty < QTY_MIN:
             errors.append(f"Task {idx}: quantity must be at least {QTY_MIN}.")
         if qty > QTY_MAX:
             errors.append(f"Task {idx}: quantity must be {QTY_MAX} or less.")
         if len(client_notes) < 3:
             errors.append(f"Task {idx}: Client / Project is required (min 3 characters).")
-        if task_cat == "Other" and len(other_text) < 3:
-            errors.append(f"Task {idx}: description is required for 'Other' (min 3 characters).")
+
+        # Task "Other" validation (existing behaviour)
+        if task_cat == "Other" and len(other_task_text) < 3:
+            errors.append(f"Task {idx}: description is required for task 'Other' (min 3 characters).")
 
     return errors
 
 
 def reset_form(task_options):
     """
-    IMPORTANT:
-    Do NOT assign to st.session_state['employee_name'] after the widget exists.
-    Instead, remove keys with pop() BEFORE widgets instantiate (handled via reset flag).
+    Clears all user inputs and resets the form to a single blank task row.
+    Uses pop() so Streamlit widget keys don't throw exceptions.
     """
-    # Clear name widget state
     st.session_state.pop("employee_name", None)
 
-    # Clear dynamic widget keys
-    prefixes = ("task_cat_", "qty_", "client_", "other_", "remove_")
+    prefixes = (
+        "task_cat_", "qty_", "client_", "other_",
+        "item_", "item_other_",
+        "remove_"
+    )
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
             st.session_state.pop(k, None)
 
-    # Reset tasks to a single row
     st.session_state["tasks"] = [{
         "task_category": task_options[0],
+        "item_type": ITEM_OPTIONS[0],
+        "item_other_text": "",
         "quantity": 1,
         "client_notes": "",
         "task_other_text": ""
@@ -229,7 +297,6 @@ def reset_form(task_options):
 # =========================
 st.set_page_config(page_title="Daily Task Log", layout="centered")
 
-# Passcode gate
 app_passcode = _get_setting("app_passcode") or _get_setting("APP_PASSCODE")
 if not app_passcode:
     st.warning(
@@ -247,12 +314,10 @@ if app_passcode:
     if code != app_passcode:
         st.stop()
 
-# Settings from secrets/env
 sheet_id = _get_setting("sheet_id")
 tab_config = _get_setting("tab_config", DEFAULT_TAB_CONFIG)
 tab_log = _get_setting("tab_log", DEFAULT_TAB_LOG)
 
-# Load task options (cached; minimal reads)
 try:
     task_options = load_task_options_cached(sheet_id, tab_config)
 except Exception as e:
@@ -263,7 +328,7 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-# --- Apply post-submit reset BEFORE widgets are instantiated ---
+# Apply reset BEFORE widgets
 if st.session_state.get("reset_requested", False):
     reset_form(task_options)
     st.session_state["reset_requested"] = False
@@ -272,11 +337,11 @@ toast_msg = st.session_state.pop("toast_msg", None)
 if toast_msg:
     st.toast(toast_msg, icon="✅")
 
-# Initialize session state
+# Initialize state
 if "tasks" not in st.session_state:
     reset_form(task_options)
 
-# Name field (keyed so we can clear it)
+# Name field
 st.text_input("Your name", key="employee_name", placeholder="Type your full name")
 employee_name = (st.session_state.get("employee_name") or "").strip()
 
@@ -284,9 +349,14 @@ st.subheader("Tasks completed today")
 
 
 def add_task_row():
-    st.session_state.tasks.append(
-        {"task_category": task_options[0], "quantity": 1, "client_notes": "", "task_other_text": ""}
-    )
+    st.session_state.tasks.append({
+        "task_category": task_options[0],
+        "item_type": ITEM_OPTIONS[0],
+        "item_other_text": "",
+        "quantity": 1,
+        "client_notes": "",
+        "task_other_text": ""
+    })
 
 
 def remove_task_row(index: int):
@@ -297,7 +367,9 @@ def remove_task_row(index: int):
 
 for i, t in enumerate(st.session_state.tasks):
     st.markdown(f"**Task {i+1}**")
-    c1, c2, c3 = st.columns([2, 1, 1])
+
+    # Row 1: task category + item worked on + qty + remove
+    c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
 
     with c1:
         t["task_category"] = st.selectbox(
@@ -308,8 +380,16 @@ for i, t in enumerate(st.session_state.tasks):
         )
 
     with c2:
+        t["item_type"] = st.selectbox(
+            "Item worked on",
+            ITEM_OPTIONS,
+            index=ITEM_OPTIONS.index(t["item_type"]) if t["item_type"] in ITEM_OPTIONS else 0,
+            key=f"item_{i}",
+        )
+
+    with c3:
         t["quantity"] = st.number_input(
-            "Quantity (# items)",
+            "Qty (# items)",
             min_value=QTY_MIN,
             max_value=QTY_MAX,
             step=1,
@@ -317,11 +397,23 @@ for i, t in enumerate(st.session_state.tasks):
             key=f"qty_{i}",
         )
 
-    with c3:
+    with c4:
         if st.button("Remove", key=f"remove_{i}"):
             remove_task_row(i)
             st.rerun()
 
+    # If item is Other, force item name
+    if t["item_type"] == "Other":
+        t["item_other_text"] = st.text_input(
+            "Other item name (required)",
+            value=t.get("item_other_text", ""),
+            placeholder="Type the item name (e.g. Banquette cushion set)",
+            key=f"item_other_{i}",
+        )
+    else:
+        t["item_other_text"] = ""
+
+    # Client/project notes
     t["client_notes"] = st.text_input(
         "Client / Project (required)",
         value=t.get("client_notes", ""),
@@ -329,9 +421,10 @@ for i, t in enumerate(st.session_state.tasks):
         key=f"client_{i}",
     )
 
+    # If task category is Other, require task description
     if t["task_category"] == "Other":
         t["task_other_text"] = st.text_input(
-            "Describe task (required for Other)",
+            "Describe task (required for task 'Other')",
             value=t.get("task_other_text", ""),
             placeholder="Describe what you did",
             key=f"other_{i}",
@@ -359,6 +452,8 @@ if st.button("✅ Submit"):
     timestamp_utc = datetime.utcnow().replace(tzinfo=pytz.utc).isoformat()
     date_local = datetime.utcnow().replace(tzinfo=pytz.utc).astimezone(BARBADOS_TZ).date().isoformat()
 
+    # NOTE: Adds two new columns to the sheet output:
+    # item_type, item_other_text
     rows = []
     for t in st.session_state.tasks:
         rows.append([
@@ -366,6 +461,8 @@ if st.button("✅ Submit"):
             date_local,
             employee_name.strip(),
             t["task_category"],
+            t["item_type"],
+            t["item_other_text"].strip(),
             int(t["quantity"]),
             t["client_notes"].strip(),
             t["task_other_text"].strip(),
@@ -375,7 +472,6 @@ if st.button("✅ Submit"):
     try:
         append_rows_batch(sheet_id, tab_log, rows)
 
-        # Request reset on next run (before widgets instantiate)
         st.session_state["toast_msg"] = "Thank you — your submission has been saved ✅"
         st.session_state["reset_requested"] = True
         st.rerun()
