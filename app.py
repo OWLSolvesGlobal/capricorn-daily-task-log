@@ -304,7 +304,7 @@ if not app_passcode:
         "Set `app_passcode` in Streamlit Secrets (recommended)."
     )
 
-st.title("Daily Task Log")
+st.title("Capricorn Drapery Daily Task Log")
 now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
 now_local = now_utc.astimezone(BARBADOS_TZ)
 st.caption(f"Date: {now_local.strftime('%Y-%m-%d')}   Time: {now_local.strftime('%I:%M %p')}")
