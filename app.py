@@ -295,7 +295,7 @@ def reset_form(task_options):
 # =========================
 # APP UI
 # =========================
-st.set_page_config(page_title="Daily Task Log", layout="centered")
+st.set_page_config(page_title="Capricorn Drapery Daily Task Log", layout="centered")
 
 app_passcode = _get_setting("app_passcode") or _get_setting("APP_PASSCODE")
 if not app_passcode:
