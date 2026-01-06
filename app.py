@@ -38,6 +38,7 @@ ITEM_OPTIONS = [
     "Outdoor Cushion",
     "Lounger Pad",
     "Bench Cushion",
+    "Headrests"
     "Window Seat Cushion",
     "Bed Runner",
     "Bed Skirt / Valance",
