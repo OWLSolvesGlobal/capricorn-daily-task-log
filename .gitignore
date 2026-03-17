@@ -1,2 +1,3 @@
 *.json
 *.gsheet
+.streamlit/secrets.toml

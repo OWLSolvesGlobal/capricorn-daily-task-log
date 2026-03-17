@@ -29,7 +29,11 @@ QTY_MAX = 200  # adjust if needed
 # =========================
 # ITEM DROPDOWN OPTIONS
 # =========================
+TASK_PLACEHOLDER = "— Select task —"
+ITEM_PLACEHOLDER = "— Select item —"
+
 ITEM_OPTIONS = [
+    ITEM_PLACEHOLDER,
     # Soft Furnishings
     "Cushion (Throw Pillow)",
     "Cushion (Seat)",
@@ -74,6 +78,7 @@ ITEM_OPTIONS = [
     "Ottoman",
     "Headboard",
     "Banquette / Booth Seating",
+    "Slipcovers",
 
     # Hotel / Specialty
     "Blackout Lining",
@@ -243,11 +248,11 @@ def validate(employee, tasks):
         except Exception:
             qty = 0
 
-        if not task_cat:
+        if not task_cat or task_cat == TASK_PLACEHOLDER:
             errors.append(f"Task {idx}: task category is required.")
 
         # Item validation
-        if not item_type:
+        if not item_type or item_type == ITEM_PLACEHOLDER:
             errors.append(f"Task {idx}: item worked on is required.")
         if item_type == "Other" and len(item_other_text) < 3:
             errors.append(f"Task {idx}: item name is required for 'Other' (min 3 characters).")
@@ -284,8 +289,8 @@ def reset_form(task_options):
             st.session_state.pop(k, None)
 
     st.session_state["tasks"] = [{
-        "task_category": task_options[0],
-        "item_type": ITEM_OPTIONS[0],
+        "task_category": TASK_PLACEHOLDER,
+        "item_type": ITEM_PLACEHOLDER,
         "item_other_text": "",
         "quantity": 1,
         "client_notes": "",
@@ -298,22 +303,112 @@ def reset_form(task_options):
 # =========================
 st.set_page_config(page_title="Capricorn Drapery Daily Task Log", layout="centered")
 
-app_passcode = _get_setting("app_passcode") or _get_setting("APP_PASSCODE")
-if not app_passcode:
-    st.warning(
-        "Security note: No app passcode configured.\n\n"
-        "Set `app_passcode` in Streamlit Secrets (recommended)."
-    )
+st.markdown("""
+<style>
+    /* ── Base font size ── */
+    html, body, [class*="css"] {
+        font-size: 16px !important;
+    }
 
-st.title("Capricorn Drapery Daily Task Log")
-now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
-now_local = now_utc.astimezone(BARBADOS_TZ)
-st.caption(f"Date: {now_local.strftime('%Y-%m-%d')}   Time: {now_local.strftime('%I:%M %p')}")
+    /* ── Page title ── */
+    h1 { font-size: 1.6rem !important; font-weight: 700 !important; }
 
-if app_passcode:
-    code = st.text_input("Access code", type="password", placeholder="Enter access code")
-    if code != app_passcode:
-        st.stop()
+    /* ── Section headings ── */
+    h2, h3 { font-size: 1.1rem !important; font-weight: 600 !important; }
+
+    /* ── Form labels ── */
+    label, .stSelectbox label, .stTextInput label,
+    .stNumberInput label, .stTextArea label {
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+        color: #1A1A1A !important;
+    }
+
+    /* ── Font smoothing — eliminates pixelation ── */
+    *, *::before, *::after {
+        -webkit-font-smoothing: antialiased !important;
+        -moz-osx-font-smoothing: grayscale !important;
+        text-rendering: optimizeLegibility !important;
+    }
+
+    /* ── Dropdown text ── */
+    .stSelectbox div[data-baseweb="select"] span,
+    .stSelectbox div[data-baseweb="select"] div {
+        font-size: 0.95rem !important;
+        color: #1A1A1A !important;
+        line-height: 1.5 !important;
+        white-space: normal !important;
+        overflow: visible !important;
+    }
+
+    /* ── Dropdown container — let it breathe, no clipping ── */
+    .stSelectbox div[data-baseweb="select"] > div {
+        padding-top: 0.35rem !important;
+        padding-bottom: 0.35rem !important;
+        height: auto !important;
+        min-height: unset !important;
+    }
+
+    /* ── Text input fields ── */
+    input[type="text"], input[type="number"] {
+        font-size: 0.95rem !important;
+        color: #1A1A1A !important;
+        padding: 0.4rem 0.65rem !important;
+    }
+
+    /* ── Primary button (Save) ── */
+    .stButton > button[kind="primary"],
+    .stButton > button {
+        font-size: 1rem !important;
+        font-weight: 600 !important;
+        padding: 0.5rem 1.25rem !important;
+        border-radius: 6px !important;
+    }
+
+    /* ── Remove / confirm buttons — subtle red text style ── */
+    [data-testid="stButton"] button[kind="secondary"]:has(~ *),
+    div[data-testid="stButton"] > button {
+        font-size: 0.8rem !important;
+    }
+    div[data-testid="stButton"]:has(button[title="Remove task 1"]) > button,
+    div[data-testid="stButton"]:has(button[title="Remove task 2"]) > button,
+    div[data-testid="stButton"]:has(button[title="Remove task 3"]) > button {
+        background: transparent !important;
+        border: none !important;
+        color: #c0392b !important;
+        font-size: 0.8rem !important;
+        padding: 0 !important;
+        text-decoration: underline !important;
+        box-shadow: none !important;
+    }
+
+    /* ── Success / error / warning banners ── */
+    .stAlert { font-size: 1rem !important; padding: 0.75rem !important; }
+
+    /* ── Caption text (date/time) ── */
+    .stCaption { font-size: 0.9rem !important; color: #444 !important; }
+
+    /* ── Divider spacing ── */
+    hr { margin: 0.75rem 0 !important; }
+
+    /* ── Task block label ── */
+    strong { font-size: 1rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
+if os.getenv("STREAMLIT_ENV") == "dev":
+    st.warning("⚠️ DEV MODE — submissions go to the TEST sheet, not production.")
+
+# Logo + title header
+col_logo, col_title = st.columns([1, 2.5])
+with col_logo:
+    st.image("assets/logo.png", width=160)
+with col_title:
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    st.title("Daily Task Log")
+    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
+    now_local = now_utc.astimezone(BARBADOS_TZ)
+    st.caption(f"Date: {now_local.strftime('%Y-%m-%d')}   \u2022   Time: {now_local.strftime('%I:%M %p')}")
 
 sheet_id = _get_setting("sheet_id")
 tab_config = _get_setting("tab_config", DEFAULT_TAB_CONFIG)
@@ -329,21 +424,25 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-# Apply reset BEFORE widgets
-if st.session_state.get("reset_requested", False):
-    reset_form(task_options)
-    st.session_state["reset_requested"] = False
 
-toast_msg = st.session_state.pop("toast_msg", None)
-if toast_msg:
-    st.toast(toast_msg, icon="✅")
+# Show full-page success screen after a submission
+if "submission_success" in st.session_state:
+    info = st.session_state["submission_success"]
+    st.success(f"✅ Thank you, {info['name']}. Your tasks have been saved for {info['date']}.")
+    st.markdown("###")
+    if st.button("📋 Log tasks for another day"):
+        del st.session_state["submission_success"]
+        st.rerun()
+    st.stop()
 
 # Initialize state
 if "tasks" not in st.session_state:
     reset_form(task_options)
 
+st.markdown("**Enter your name, then fill in each task you completed today. Press Save My Tasks for Today when done.**")
+
 # Name field
-st.text_input("Your name", key="employee_name", placeholder="Type your full name")
+st.text_input("Your full name (required)", key="employee_name", placeholder="Type your full name")
 employee_name = (st.session_state.get("employee_name") or "").strip()
 
 st.subheader("Tasks completed today")
@@ -351,8 +450,8 @@ st.subheader("Tasks completed today")
 
 def add_task_row():
     st.session_state.tasks.append({
-        "task_category": task_options[0],
-        "item_type": ITEM_OPTIONS[0],
+        "task_category": TASK_PLACEHOLDER,
+        "item_type": ITEM_PLACEHOLDER,
         "item_other_text": "",
         "quantity": 1,
         "client_notes": "",
@@ -369,14 +468,15 @@ def remove_task_row(index: int):
 for i, t in enumerate(st.session_state.tasks):
     st.markdown(f"**Task {i+1}**")
 
-    # Row 1: task category + item worked on + qty + remove
-    c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+    # Row 1: task category + item worked on + qty
+    c1, c2, c3 = st.columns([2, 2, 1])
 
     with c1:
+        _task_opts = [TASK_PLACEHOLDER] + task_options
         t["task_category"] = st.selectbox(
             "Task category",
-            task_options,
-            index=task_options.index(t["task_category"]) if t["task_category"] in task_options else 0,
+            _task_opts,
+            index=_task_opts.index(t["task_category"]) if t["task_category"] in _task_opts else 0,
             key=f"task_cat_{i}",
         )
 
@@ -397,11 +497,6 @@ for i, t in enumerate(st.session_state.tasks):
             value=int(t["quantity"]) if str(t["quantity"]).isdigit() else 1,
             key=f"qty_{i}",
         )
-
-    with c4:
-        if st.button("Remove", key=f"remove_{i}"):
-            remove_task_row(i)
-            st.rerun()
 
     # If item is Other, force item name
     if t["item_type"] == "Other":
@@ -433,6 +528,29 @@ for i, t in enumerate(st.session_state.tasks):
     else:
         t["task_other_text"] = ""
 
+    # Two-tap remove — only shown when multiple tasks exist
+    if len(st.session_state.tasks) > 1:
+        _, col_remove = st.columns([4, 1])
+        with col_remove:
+            if st.session_state.get("confirm_remove") == i:
+                st.markdown(
+                    "<p style='color:#c0392b; font-size:0.8rem; margin-bottom:2px'>Are you sure?</p>",
+                    unsafe_allow_html=True,
+                )
+                if st.button("Yes, remove", key=f"confirm_{i}"):
+                    remove_task_row(i)
+                    del st.session_state["confirm_remove"]
+                    st.rerun()
+            else:
+                st.markdown(
+                    f"<p style='color:#c0392b; font-size:0.8rem; cursor:pointer; margin-top:8px'>"
+                    f"🗑 Remove</p>",
+                    unsafe_allow_html=True,
+                )
+                if st.button("🗑 Remove", key=f"remove_{i}", help=f"Remove task {i+1}"):
+                    st.session_state["confirm_remove"] = i
+                    st.rerun()
+
     st.divider()
 
 st.button("➕ Add another task", on_click=add_task_row)
@@ -441,7 +559,7 @@ st.button("➕ Add another task", on_click=add_task_row)
 # =========================
 # SUBMIT
 # =========================
-if st.button("✅ Submit"):
+if st.button("✅ Save My Tasks for Today"):
     errs = validate(employee_name, st.session_state.tasks)
     if errs:
         st.error("Please fix the following:")
@@ -473,8 +591,11 @@ if st.button("✅ Submit"):
     try:
         append_rows_batch(sheet_id, tab_log, rows)
 
-        st.session_state["toast_msg"] = "Thank you — your submission has been saved ✅"
-        st.session_state["reset_requested"] = True
+        st.session_state["submission_success"] = {
+            "name": employee_name.strip(),
+            "date": date_local,
+        }
+        reset_form(task_options)
         st.rerun()
 
     except Exception as e:
