@@ -44,6 +44,7 @@ The `sheet_id` is the bare ID from the Google Sheets URL (between `/d/` and `/ed
 |-----|---------|
 | `Config` | Column A lists available task categories (loaded at startup, cached 1 hour) |
 | `DailyLog` | Append-only log; columns: `timestamp_utc`, `date_local`, `employee`, `task_category`, `item_type`, `item_other_text`, `quantity`, `client_notes`, `task_other_text`, `submission_id` |
+| `Staff` | Column A lists employee full names (no header). Used by the daily summary email script to determine who submitted and who didn't. |
 
 ## Key design decisions
 
@@ -57,3 +58,19 @@ The `sheet_id` is the bare ID from the Google Sheets URL (between `/d/` and `/ed
 ## write_test.py
 
 A standalone script to verify Google Sheets write access. Run with `GOOGLE_APPLICATION_CREDENTIALS` set. Uses `gc.open(SHEET_ID)` (by name, not key) — note this differs from `app.py` which uses `open_by_key`.
+
+## daily_summary.gs — Daily email automation
+
+A Google Apps Script that sends a 5 PM weekday email to `info@capricorndrapery.com` summarising daily task submissions.
+
+**Setup (one-time):**
+1. In the Google Sheet, create a `Staff` tab with employee names in column A (no header).
+2. Open Extensions → Apps Script, paste the contents of `daily_summary.gs`, and save.
+3. Run `installTrigger()` once from the editor and approve the authorisation prompts.
+
+**What the email contains:**
+- Staff who submitted (with task count per person)
+- Staff who did not submit
+- Operations summary grouped by task category with item types and quantities
+
+**Maintenance:** Add or remove staff by editing the `Staff` tab — no code changes needed.
