@@ -113,29 +113,27 @@ function sendDailySummary() {
     catItems[displayItem] = (catItems[displayItem] || 0) + quantity;
   }
 
-  // ── Determine who submitted and who didn't ───────────────────────
+  // ── Match log names to staff list (fuzzy) ─────────────────────────
+  // Consolidate submission counts under the canonical staff name.
+  // Match priority: exact → first-name → starts-with prefix.
+  // A partial name only matches if it resolves to exactly one staff member.
+  var staffCounts = {};  // canonical staff name → total task count
+  for (var s = 0; s < allStaff.length; s++) staffCounts[allStaff[s]] = 0;
+
+  for (var emp in submittedMap) {
+    var matched = matchToStaff(emp, allStaff);
+    if (matched) {
+      staffCounts[matched] += submittedMap[emp];
+    }
+    // Unmatched names are ignored for the submitted/missing split
+    // but their tasks still count toward totals and category summaries
+  }
+
   var submittedStaff = [];
   var missingStaff = [];
-  var staffLower = {};
   for (var s = 0; s < allStaff.length; s++) {
-    staffLower[allStaff[s].toLowerCase()] = allStaff[s];
-  }
-
-  // Match submitted names to staff list (case-insensitive)
-  var matchedLower = {};
-  for (var emp in submittedMap) {
-    matchedLower[emp.toLowerCase()] = true;
-  }
-
-  for (var s = 0; s < allStaff.length; s++) {
-    var key = allStaff[s].toLowerCase();
-    if (matchedLower[key]) {
-      // Find the count — match case-insensitively
-      var count = 0;
-      for (var emp in submittedMap) {
-        if (emp.toLowerCase() === key) count += submittedMap[emp];
-      }
-      submittedStaff.push({ name: allStaff[s], count: count });
+    if (staffCounts[allStaff[s]] > 0) {
+      submittedStaff.push({ name: allStaff[s], count: staffCounts[allStaff[s]] });
     } else {
       missingStaff.push(allStaff[s]);
     }
@@ -148,6 +146,48 @@ function sendDailySummary() {
     subject: "Daily Task Summary \u2014 " + prettyDate,
     htmlBody: html
   });
+}
+
+// ── Fuzzy name matcher ─────────────────────────────────────────────
+// Matches a name entered in the log to the canonical staff list.
+// Priority: 1) exact full-name  2) first-name match  3) starts-with prefix
+// Returns the canonical staff name, or null if no unique match found.
+function matchToStaff(logName, allStaff) {
+  var input = logName.trim().toLowerCase();
+  if (!input) return null;
+
+  // 1. Exact full-name match (case-insensitive)
+  for (var i = 0; i < allStaff.length; i++) {
+    if (allStaff[i].toLowerCase() === input) return allStaff[i];
+  }
+
+  // 2. First-name match — input matches the first word of a staff name
+  var candidates = [];
+  for (var i = 0; i < allStaff.length; i++) {
+    var firstName = allStaff[i].split(/\s+/)[0].toLowerCase();
+    if (firstName === input) candidates.push(allStaff[i]);
+  }
+  if (candidates.length === 1) return candidates[0];
+
+  // 3. Starts-with prefix — staff full name starts with input
+  //    e.g. "Jane D" matches "Jane Doe"
+  candidates = [];
+  for (var i = 0; i < allStaff.length; i++) {
+    if (allStaff[i].toLowerCase().indexOf(input) === 0) candidates.push(allStaff[i]);
+  }
+  if (candidates.length === 1) return candidates[0];
+
+  // 4. Last-name match — input matches the last word of a staff name
+  candidates = [];
+  for (var i = 0; i < allStaff.length; i++) {
+    var parts = allStaff[i].split(/\s+/);
+    var lastName = parts[parts.length - 1].toLowerCase();
+    if (lastName === input) candidates.push(allStaff[i]);
+  }
+  if (candidates.length === 1) return candidates[0];
+
+  // No unique match — return null
+  return null;
 }
 
 // ── Email builder ──────────────────────────────────────────────────
